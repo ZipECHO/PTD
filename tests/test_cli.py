@@ -61,6 +61,18 @@ def test_enable_ptd_adds_opt_in_generate_dispatch():
     )
 
 
+def test_enable_ptd_preserves_native_transformers_dispatch():
+    import tree_draft
+
+    class DummyModel:
+        def generate(self, inputs=None, use_ptd=False, **kwargs):
+            return inputs, use_ptd, kwargs
+
+    model = tree_draft.enable_ptd(DummyModel())
+    assert model.generate("tokens", use_ptd=True) == ("tokens", True, {})
+    assert not hasattr(model, "_ptd_generate_dispatch_installed")
+
+
 def test_cache_server_argument_validation():
     import pytest
     from tree_draft.cache import _launch_cache_server, _repo_cache_server_script

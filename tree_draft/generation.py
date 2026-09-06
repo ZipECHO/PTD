@@ -10,6 +10,7 @@ first-class generation mode.
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import wraps
+import inspect
 from types import MethodType, SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
 
@@ -195,6 +196,14 @@ def _install_generate_dispatch(model):
     original_generate = getattr(model, "generate", None)
     if not callable(original_generate):
         return
+    # A PTD-enabled Transformers fork owns the dispatch itself. In that
+    # environment only the backend hook should be installed below; wrapping
+    # ``generate`` would bypass the fork's normal input preparation.
+    try:
+        if "use_ptd" in inspect.signature(original_generate).parameters:
+            return
+    except (TypeError, ValueError):
+        pass
     if getattr(model, "_ptd_generate_dispatch_installed", False):
         return
 
