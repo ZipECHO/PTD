@@ -1,0 +1,59 @@
+From b8ce689 Mon Sep 17 00:00:00 2001
+From: PTD contributors <ptd@example.invalid>
+Date: Sun, 6 Sep 2026 21:00:00 +0800
+Subject: [PATCH] feat(generation): add opt-in PTD dispatch hook
+
+---
+ src/transformers/generation/utils.py | 30 +++++++++++++++++++++++++++++-
+ 1 file changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/src/transformers/generation/utils.py b/src/transformers/generation/utils.py
+index 6f4adcf..04c3736 100644
+--- a/src/transformers/generation/utils.py
++++ b/src/transformers/generation/utils.py
+@@ -2257,6 +2257,7 @@ class GenerationMixin(ContinuousMixin):
+         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+         use_model_defaults: Optional[bool] = None,
+         custom_generate: Optional[str] = None,
++        use_ptd: bool = False,
+         **kwargs,
+@@ -2331,6 +2332,9 @@ class GenerationMixin(ContinuousMixin):
+                 function defined in that reposity's `custom_generate/generate.py` file will be executed instead of the
+                 standard `generate` method. Note that the logic is for generation is entirely defined in that
+                 repository, and the return type may be different from the standard `generate` method.
++            use_ptd (`bool`, *optional*, defaults to `False`):
++                Use the Progressive Tree Drafting search implementation exposed by the model's `_ptd_search` hook.
++                This is an opt-in mode; when `False`, generation follows the standard Transformers implementation.
+             kwargs (`dict[str, Any]`, *optional*):
+@@ -2532,7 +2536,31 @@ class GenerationMixin(ContinuousMixin):
+         # 10. go into different generation modes
+-        if generation_mode == GenerationMode.ASSISTED_GENERATION:
++        if use_ptd:
++            if not hasattr(self, "_ptd_search"):
++                raise RuntimeError(
++                    "use_ptd=True requires a model with a `_ptd_search` hook. "
++                    "Install PTD and enable it on the model before calling generate."
++                )
++            if self.config.is_encoder_decoder:
++                raise ValueError("PTD generation currently supports decoder-only models")
++            if generation_config.num_beams != 1:
++                raise ValueError("PTD generation requires num_beams=1")
++            if generation_config.num_return_sequences != 1:
++                raise ValueError("PTD generation requires num_return_sequences=1")
++            if assistant_model is not None:
++                raise ValueError("PTD generation cannot be combined with assistant_model")
++
++            result = self._ptd_search(
++                input_ids,
++                logits_processor=prepared_logits_processor,
++                stopping_criteria=prepared_stopping_criteria,
++                generation_config=generation_config,
++                synced_gpus=synced_gpus,
++                streamer=streamer,
++                **model_kwargs,
++            )
++        elif generation_mode == GenerationMode.ASSISTED_GENERATION:
+             if generation_config.num_return_sequences > 1:
+                 raise ValueError(
+-- 
+2.39.3

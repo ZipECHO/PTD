@@ -34,6 +34,16 @@ branch `codex/ptd-integration`. It adds the
 model's `_ptd_search` hook. The PTD algorithm and model backends stay in this
 repository, so the fork remains a thin dispatch layer.
 
+The reproducible patch is checked in at
+`patches/transformers-v4.54.0-ptd-dispatch.patch`. Apply it to a clean
+Transformers `v4.54.0` checkout to recreate the fork branch:
+
+```bash
+git checkout v4.54.0
+git switch -c codex/ptd-integration
+git apply /path/to/PTD/patches/transformers-v4.54.0-ptd-dispatch.patch
+```
+
 Install both projects in editable mode, then use the same call shown above:
 
 ```bash
