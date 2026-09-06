@@ -94,10 +94,9 @@ outputs = model.generate(
 )
 ```
 
-This instance-local dispatch is the compatibility layer for the planned
-Transformers fork. It avoids changing Transformers classes globally and
-supports the same `use_ptd=True` call that will be available when the PTD
-generation mode is integrated directly into `GenerationMixin`.
+This instance-local dispatch is the compatibility layer for the companion
+Transformers fork. It avoids changing Transformers classes globally and uses
+the same `use_ptd=True` call exposed by that fork's `GenerationMixin`.
 
 ## Configuration
 
@@ -298,10 +297,9 @@ the call. For long-lived services, it can be managed explicitly with
 `tree_draft.ensure_cache_server()` and `tree_draft.stop_cache_server()`.
 
 This first-stage API accepts tokenized inputs and reuses the existing PTD
-search loop. It is deliberately separate from `model.generate()`; a later
-Transformers fork can dispatch its native generation mode to the same
-`_ptd_search()` hook while retaining Transformers' standard input preparation,
-stopping criteria, streamers, and output handling.
+search loop. The companion Transformers fork dispatches its native generation
+mode to the same `_ptd_search()` hook while retaining Transformers' standard
+input preparation, stopping criteria, streamers, and output handling.
 
 ## Citation
 
