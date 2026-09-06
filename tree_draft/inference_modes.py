@@ -155,6 +155,10 @@ def get_model_answers(
 ):
     ds_local_rank = int(os.getenv('LOCAL_RANK', '0'))
     profile = InferProfile()
+    use_tokenizer_template = (
+        callable(getattr(tokenizer, 'apply_chat_template', None))
+        and getattr(tokenizer, 'chat_template', None) is not None
+    )
 
     for batch_idx, questions in enumerate(sampled_questions_batch):
 
@@ -167,15 +171,30 @@ def get_model_answers(
             inputs_list = []
             for j, question in enumerate(questions):
                 if len(convs) < len(questions):
-                    conv = get_conversation_template(model_path)
-                    conv.append_message(conv.roles[0], question[turn])
-                    conv.append_message(conv.roles[1], None)
+                    if use_tokenizer_template:
+                        conv = [
+                            {'role': 'user', 'content': question[turn]},
+                            {'role': 'assistant', 'content': None},
+                        ]
+                    else:
+                        conv = get_conversation_template(model_path)
+                        conv.append_message(conv.roles[0], question[turn])
+                        conv.append_message(conv.roles[1], None)
                     convs.append(conv)
                 else:
-                    convs[j].append_message(convs[j].roles[0], question[turn])
-                    convs[j].append_message(convs[j].roles[1], None)
+                    if use_tokenizer_template:
+                        convs[j].append({'role': 'user', 'content': question[turn]})
+                        convs[j].append({'role': 'assistant', 'content': None})
+                    else:
+                        convs[j].append_message(convs[j].roles[0], question[turn])
+                        convs[j].append_message(convs[j].roles[1], None)
 
-                prompt = convs[j].get_prompt()
+                if use_tokenizer_template:
+                    prompt = tokenizer.apply_chat_template(
+                        convs[j], tokenize=False, add_generation_prompt=True
+                    )
+                else:
+                    prompt = convs[j].get_prompt()
                 prompt = prompt.replace('<s>', ' ').replace('</s>', ' ')
                 inputs_list.append(prompt)
 
@@ -231,7 +250,10 @@ def get_model_answers(
 
             assert len(output_str) == len(convs)
             for i in range(len(output_str)):
-                convs[i].messages[-1][-1] = output_str[i]
+                if use_tokenizer_template:
+                    convs[i][-1]['content'] = output_str[i]
+                else:
+                    convs[i].messages[-1][-1] = output_str[i]
 
         profile.log_profile(logger, stage=f"Profile So Far (Batch {batch_idx + 1})")
 

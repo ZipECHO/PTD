@@ -1,6 +1,4 @@
 import math
-import subprocess
-import sys
 import warnings
 from argparse import Namespace
 from statistics import stdev
@@ -11,7 +9,7 @@ from fastchat.llm_judge.common import load_questions
 from fastchat.model.model_adapter import Llama2Adapter, QwenChatAdapter, \
     raise_warning_for_incompatible_cpu_offloading_configuration
 from fastchat.utils import get_gpu_memory, str_to_torch_dtype
-from transformers import GenerationMixin
+from transformers import AutoConfig, GenerationMixin
 from transformers.models.llama import modeling_llama
 from transformers.models.qwen2 import modeling_qwen2
 from transformers.models.qwen3 import modeling_qwen3
@@ -364,11 +362,31 @@ def load_model(
 ):
     """Load a model from Hugging Face."""
 
-    # adapter = Llama2Adapter()
-    if 'qwen' in model_path.lower():
+    # Select the FastChat adapter from the model config instead of relying on
+    # a directory name such as ``qwen`` or ``llama``.
+    try:
+        model_type = AutoConfig.from_pretrained(model_path, revision=revision).model_type.lower()
+    except Exception as exc:
+        model_type = ""
+        logger.warning(f"Could not inspect model config for {model_path}: {exc}")
+
+    if model_type in {"qwen", "qwen2", "qwen3"}:
         adapter = QwenChatAdapter()
-    if 'llama' in model_path.lower():
+    elif model_type in {"llama", "llama2"}:
         adapter = Llama2Adapter()
+    else:
+        # Keep a useful fallback for older local checkpoints whose config does
+        # not expose a model_type, while failing clearly for unknown models.
+        model_name = model_path.lower()
+        if "qwen" in model_name:
+            adapter = QwenChatAdapter()
+        elif "llama" in model_name:
+            adapter = Llama2Adapter()
+        else:
+            raise ValueError(
+                f"Unsupported model_type={model_type!r} for {model_path}. "
+                "Currently supported model types are llama, qwen2, and qwen3."
+            )
 
     # Handle device mapping
     cpu_offloading = raise_warning_for_incompatible_cpu_offloading_configuration(
@@ -549,25 +567,8 @@ def extract_prune_questions(sampled_questions, bench_name):
 
 
 def start_cache_server(batch_size=1, rest_corpus_path=None, tokenizer_path=None):
-    python_path = sys.executable
-    if rest_corpus_path is not None and tokenizer_path is not None:
-        cacher_server_process = subprocess.Popen(
-            [python_path, "cache_server.py", str(batch_size), rest_corpus_path, tokenizer_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1)
-    elif rest_corpus_path is None and tokenizer_path is None:
-        cacher_server_process = subprocess.Popen([python_path, "cache_server.py", str(batch_size)],
-                                                 stdout=subprocess.PIPE,
-                                                 stderr=subprocess.PIPE, text=True, bufsize=1)
-    else:
-        raise RuntimeError('')
-    print("Waiting for the cache server starting...")
-    for line in cacher_server_process.stdout:
-        if 'Tree cache server started' in line:
-            print(line.strip() + " (PID: {})".format(cacher_server_process.pid))
-            break
-
-
+    from .cache import start_cache_server as _start_cache_server
+    return _start_cache_server(batch_size, rest_corpus_path, tokenizer_path)
 
 
 

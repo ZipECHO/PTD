@@ -75,6 +75,30 @@ python main.py \
     --sample-number -1
 ```
 
+### 3. Transformers-style API (opt-in)
+
+For applications that already load a model with Transformers, enable PTD on
+that model instance. The regular `generate()` implementation remains the
+default; pass `use_ptd=True` only for the PTD path:
+
+```python
+import tree_draft
+
+model = tree_draft.enable_ptd(model)
+outputs = model.generate(
+    **inputs,
+    use_ptd=True,
+    max_new_tokens=1024,
+    temperature=0.0,
+    ptd_config=tree_draft.PTDDecodeConfig(max_depth=6),
+)
+```
+
+This instance-local dispatch is the compatibility layer for the planned
+Transformers fork. It avoids changing Transformers classes globally and
+supports the same `use_ptd=True` call that will be available when the PTD
+generation mode is integrated directly into `GenerationMixin`.
+
 ## Configuration
 
 ### Tree Structure Configuration
@@ -218,7 +242,13 @@ Results are saved in the log directory specified by `--log-path`. Each run gener
 The implementation currently supports:
 
 - **LLaMA-2 and LLaMA-3 family**
-- **Qwen-2 and Qwen-3 family**
+- **Qwen-2 and Qwen-3 family**, including standard text-only `Qwen3ForCausalLM`
+  checkpoints such as `Qwen/Qwen3-8B`
+
+Qwen3 support requires a Transformers version that provides
+`transformers.models.qwen3` (the tested environment uses `transformers==4.54.0`).
+Multimodal or hybrid-attention variants such as Qwen3.8 are not covered by this
+backend.
 
 To add support for new models, implement the model-specific interface in `tree_draft/models/`.
 
@@ -241,6 +271,37 @@ pytest
 
 See `CONTRIBUTING.md` before opening a pull request. Do not commit model
 weights, local filesystem paths, generated logs, or unreviewed result dumps.
+
+## PTD generation interface
+
+The repository provides an instance-local, `GenerationMixin`-style entry point
+without changing Transformers classes globally:
+
+```python
+import tree_draft
+
+model = tree_draft.enable_ptd(model)
+outputs = model.ptd_generate(
+    input_ids=inputs["input_ids"],
+    max_new_tokens=256,
+    temperature=0.0,
+    ptd_config=tree_draft.PTDDecodeConfig(
+        ini_max_depth=2,
+        max_depth=6,
+        default_max_child_num=4,
+    ),
+)
+```
+
+The PTD entry point starts the cache server on demand and cleans it up after
+the call. For long-lived services, it can be managed explicitly with
+`tree_draft.ensure_cache_server()` and `tree_draft.stop_cache_server()`.
+
+This first-stage API accepts tokenized inputs and reuses the existing PTD
+search loop. It is deliberately separate from `model.generate()`; a later
+Transformers fork can dispatch its native generation mode to the same
+`_ptd_search()` hook while retaining Transformers' standard input preparation,
+stopping criteria, streamers, and output handling.
 
 ## Citation
 

@@ -4,6 +4,8 @@ Public helpers are imported lazily so lightweight commands do not require the
 full GPU inference stack at import time.
 """
 
+from .generation import PTDDecodeConfig
+
 
 def _utils_function(name):
     from . import utils
@@ -38,6 +40,21 @@ def start_cache_server(*args, **kwargs):
     return _utils_function("start_cache_server")(*args, **kwargs)
 
 
+def ensure_cache_server(*args, **kwargs):
+    from .cache import ensure_cache_server as _ensure_cache_server
+    return _ensure_cache_server(*args, **kwargs)
+
+
+def stop_cache_server(*args, **kwargs):
+    from .cache import stop_cache_server as _stop_cache_server
+    return _stop_cache_server(*args, **kwargs)
+
+
+def enable_ptd(*args, **kwargs):
+    from .generation import enable_ptd as _enable_ptd
+    return _enable_ptd(*args, **kwargs)
+
+
 __all__ = [
     "augment_all",
     "augment_generate",
@@ -46,4 +63,8 @@ __all__ = [
     "load_model",
     "get_inference_id",
     "start_cache_server",
+    "ensure_cache_server",
+    "stop_cache_server",
+    "enable_ptd",
+    "PTDDecodeConfig",
 ]
