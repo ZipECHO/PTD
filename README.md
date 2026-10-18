@@ -75,28 +75,31 @@ python main.py \
     --sample-number -1
 ```
 
-### 3. Transformers-style API (opt-in)
+### 3. Python API (experimental)
 
 For applications that already load a model with Transformers, enable PTD on
-that model instance. The regular `generate()` implementation remains the
-default; pass `use_ptd=True` only for the PTD path:
+that model instance and call the experimental `ptd_generate()` method:
 
 ```python
 import tree_draft
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model = tree_draft.enable_ptd(model)
-outputs = model.generate(
-    **inputs,
-    use_ptd=True,
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto")
+tree_draft.enable_ptd(model, tokenizer=tokenizer)
+inputs = tokenizer("Explain speculative decoding briefly.", return_tensors="pt")
+outputs = model.ptd_generate(
+    input_ids=inputs["input_ids"],
     max_new_tokens=1024,
     temperature=0.0,
     ptd_config=tree_draft.PTDDecodeConfig(max_depth=6),
 )
 ```
 
-This instance-local dispatch is the compatibility layer for the companion
-Transformers fork. It avoids changing Transformers classes globally and uses
-the same `use_ptd=True` call exposed by that fork's `GenerationMixin`.
+This interface is experimental and accepts tokenized decoder-only inputs. It
+requires the tokenizer to be attached explicitly. The `model.generate(...,
+use_ptd=True)` convenience wrapper and the patch under `patches/` are not
+recommended while Transformers integration is paused.
 
 ## Configuration
 
@@ -296,10 +299,9 @@ The PTD entry point starts the cache server on demand and cleans it up after
 the call. For long-lived services, it can be managed explicitly with
 `tree_draft.ensure_cache_server()` and `tree_draft.stop_cache_server()`.
 
-This first-stage API accepts tokenized inputs and reuses the existing PTD
-search loop. The companion Transformers fork dispatches its native generation
-mode to the same `_ptd_search()` hook while retaining Transformers' standard
-input preparation, stopping criteria, streamers, and output handling.
+This experimental API accepts tokenized inputs and reuses the existing PTD
+search loop. It currently returns token IDs only; custom logits processors,
+streamers, and structured generation outputs are not implemented.
 
 ## Citation
 

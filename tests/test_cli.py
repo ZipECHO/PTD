@@ -29,6 +29,40 @@ def test_generation_interface_is_lazy():
     assert config.to_tree_config()["node_config"]["default_max_child_num"] == 4
 
 
+def test_ptd_config_rejects_invalid_values():
+    import pytest
+    from tree_draft import PTDDecodeConfig
+    from tree_draft.generation import _coerce_ptd_config
+
+    with pytest.raises(ValueError, match="max_depth"):
+        PTDDecodeConfig(max_depth=0)
+    with pytest.raises(ValueError, match="tree_update_method"):
+        PTDDecodeConfig(tree_update_method="unknown")
+    with pytest.raises(ValueError, match="Unknown PTD config field"):
+        _coerce_ptd_config({"max_dept": 6})
+
+
+def test_ptd_generate_reports_tokenizer_and_input_contract_early():
+    import pytest
+    import tree_draft
+
+    class TensorLike:
+        shape = (1, 2)
+
+    class DummyModel:
+        generation_config = type("GenerationConfig", (), {"temperature": 0.0, "do_sample": False})()
+
+    model = tree_draft.enable_ptd(DummyModel())
+    with pytest.raises(RuntimeError, match="pass it to enable_ptd"):
+        model.ptd_generate(input_ids=TensorLike(), max_new_tokens=1)
+
+    model = tree_draft.enable_ptd(DummyModel(), tokenizer=object())
+    with pytest.raises(ValueError, match="rank-2"):
+        model.ptd_generate(input_ids=[1, 2], max_new_tokens=1)
+    with pytest.raises(ValueError, match="positive integer"):
+        model.ptd_generate(input_ids=TensorLike(), max_new_tokens=0)
+
+
 def test_enable_ptd_is_instance_local():
     import tree_draft
 

@@ -1,16 +1,16 @@
-"""GenerationMixin-style PTD entry points.
+"""Experimental instance-local generation entry points for PTD.
 
 This module intentionally does not patch ``transformers.GenerationMixin``.
 Instead, :func:`enable_ptd` attaches an instance-local ``ptd_generate`` method
-to a model.  The implementation reuses the existing PTD search loop today and
-provides the stable seam that can later be wired into a Transformers fork as a
-first-class generation mode.
+to a model. The implementation reuses the existing PTD search loop and does
+not claim full compatibility with Transformers' generation options.
 """
 
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import wraps
 import inspect
+import math
 from types import MethodType, SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
 
@@ -35,6 +35,40 @@ class PTDDecodeConfig:
     ignore_exceed: bool = False
     tree_update_method: str = "argmax"
     root_visible: bool = False
+
+    def __post_init__(self):
+        integer_fields = {
+            "ini_max_depth": self.ini_max_depth,
+            "max_depth": self.max_depth,
+            "exclude_root": self.exclude_root,
+            "default_max_child_num": self.default_max_child_num,
+            "default_min_child_num": self.default_min_child_num,
+        }
+        for name, value in integer_fields.items():
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer, got {type(value).__name__}")
+        if self.max_depth < 1:
+            raise ValueError("max_depth must be >= 1")
+        if self.ini_max_depth < 0 or self.ini_max_depth > self.max_depth:
+            raise ValueError("ini_max_depth must be between 0 and max_depth")
+        if self.exclude_root not in (0, 1):
+            raise ValueError("exclude_root must be 0 or 1")
+        if self.tree_update_method not in {"argmax", "sample", "topk", "topp"}:
+            raise ValueError("tree_update_method must be one of argmax, sample, topk, topp")
+        if len(self.max_child_num) != len(self.min_child_num):
+            raise ValueError("max_child_num and min_child_num must have equal lengths")
+        if not self.max_child_num:
+            raise ValueError("child-count configuration lists cannot be empty")
+        for name, values in (
+            ("max_child_num", self.max_child_num),
+            ("min_child_num", self.min_child_num),
+        ):
+            if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+                raise ValueError(f"{name} must contain non-negative integers")
+        if any(minimum > maximum for minimum, maximum in zip(self.min_child_num, self.max_child_num)):
+            raise ValueError("min_child_num entries cannot exceed max_child_num entries")
+        if self.default_min_child_num < 0 or self.default_max_child_num < self.default_min_child_num:
+            raise ValueError("default child counts must satisfy 0 <= default_min <= default_max")
 
     def to_tree_config(self) -> Dict[str, Any]:
         """Convert the public config to the legacy tree-config structure."""
@@ -66,23 +100,29 @@ def _coerce_ptd_config(config: Optional[Any]) -> PTDDecodeConfig:
         values = dict(config)
         node = values.pop("node_config", {}) or {}
         tree = values.pop("tree_config", {}) or {}
+        if not isinstance(node, Mapping) or not isinstance(tree, Mapping):
+            raise TypeError("node_config and tree_config must be mappings")
+        allowed = set(PTDDecodeConfig.__dataclass_fields__)
+        unknown = (set(values) | set(node) | set(tree)) - allowed
+        if unknown:
+            raise ValueError(f"Unknown PTD config field(s): {', '.join(sorted(unknown))}")
         values.update(node)
-        if "root_visible" not in values:
-            values["root_visible"] = tree.get("root_visible", False)
-        return PTDDecodeConfig(**{
-            key: value for key, value in values.items()
-            if key in PTDDecodeConfig.__dataclass_fields__
-        })
+        if "root_visible" in values and "root_visible" in tree:
+            raise ValueError("root_visible must not be specified both at top level and in tree_config")
+        values.setdefault("root_visible", tree.get("root_visible", False))
+        unknown_tree = set(tree) - {"root_visible"}
+        if unknown_tree:
+            raise ValueError(f"Unsupported tree_config field(s): {', '.join(sorted(unknown_tree))}")
+        return PTDDecodeConfig(**values)
     raise TypeError("ptd_config must be PTDDecodeConfig, a mapping, or None")
 
 
 class PTDGenerationMixin:
-    """GenerationMixin-shaped interface for progressive tree drafting.
+    """Experimental direct interface for progressive tree drafting.
 
-    ``ptd_generate`` accepts already-tokenized ``input_ids`` and the same
-    low-level generation arguments used by Transformers' ``_sample`` method.
-    A later integration can call ``_ptd_search`` directly after Transformers'
-    normal input/configuration preparation phase.
+    ``ptd_generate`` accepts already-tokenized ``input_ids``. It supports a
+    deliberately small set of generation options; see the public method's
+    validation errors for currently unsupported features.
     """
 
     def ptd_generate(
@@ -93,16 +133,31 @@ class PTDGenerationMixin:
         generation_config=None,
         max_new_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        logits_processor=None,
+        streamer=None,
         **kwargs,
     ):
         """Generate with PTD without modifying global Transformers classes.
 
-        The model must expose ``tokenizer`` and ``input_ids`` should be a
-        tensor produced by the model's tokenizer or processor. The PTD cache
-        server is started on demand and cleaned up after this call.
+        `tokenizer` must be attached with `enable_ptd(model, tokenizer=...)`.
+        This initial API returns token IDs only; custom logits processors,
+        streamers, and structured generation outputs are not implemented.
         """
         if input_ids is None:
             raise ValueError("ptd_generate requires tokenized input_ids")
+        if not hasattr(input_ids, "shape") or len(input_ids.shape) != 2:
+            raise ValueError("input_ids must be a rank-2 tensor with shape (batch, sequence)")
+        if input_ids.shape[0] < 1 or input_ids.shape[1] < 1:
+            raise ValueError("input_ids must contain at least one sequence and one token")
+        if getattr(self, "tokenizer", None) is None:
+            raise RuntimeError(
+                "PTD requires a tokenizer. Load one with AutoTokenizer and pass "
+                "it to enable_ptd(model, tokenizer=tokenizer)."
+            )
+        if logits_processor:
+            raise NotImplementedError("Custom logits_processor is not supported by the PTD search loop yet")
+        if streamer is not None:
+            raise NotImplementedError("Transformers streamers are not supported by the PTD search loop yet")
 
         config = _coerce_ptd_config(ptd_config)
         if not hasattr(self, "generation_config") and generation_config is None:
@@ -114,12 +169,33 @@ class PTDGenerationMixin:
             generation_config = deepcopy(generation_config)
         if temperature is not None:
             generation_config.temperature = temperature
-        elif getattr(generation_config, "temperature", None) is None:
+        elif not getattr(generation_config, "do_sample", False):
+            # Transformers commonly stores temperature=1.0 even for greedy
+            # generation. Respect do_sample=False instead of sampling merely
+            # because that default temperature is non-zero.
             generation_config.temperature = 0.0
         if max_new_tokens is None:
             max_new_tokens = getattr(generation_config, "max_new_tokens", None)
         if max_new_tokens is None:
             raise ValueError("ptd_generate requires max_new_tokens")
+        if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or max_new_tokens < 1:
+            raise ValueError("max_new_tokens must be a positive integer")
+        effective_temperature = getattr(generation_config, "temperature", 0.0)
+        if not isinstance(effective_temperature, (int, float)) or not math.isfinite(effective_temperature):
+            raise ValueError("temperature must be a finite non-negative number")
+        if effective_temperature < 0:
+            raise ValueError("temperature must be a finite non-negative number")
+
+        unsupported_outputs = (
+            "return_dict_in_generate",
+            "output_scores",
+            "output_attentions",
+            "output_hidden_states",
+        )
+        for name in unsupported_outputs:
+            requested = kwargs.get(name, getattr(generation_config, name, False))
+            if requested:
+                raise NotImplementedError(f"{name}=True is not supported by the PTD search loop yet")
 
         generation_config.max_new_tokens = max_new_tokens
         generation_config.do_sample = bool(
@@ -188,10 +264,9 @@ class PTDGenerationMixin:
 def _install_generate_dispatch(model):
     """Install an instance-local ``generate(use_ptd=True)`` dispatch.
 
-    This is deliberately attached to one model instance instead of modifying
-    ``transformers.GenerationMixin`` globally.  It gives applications the
-    same opt-in API that a future Transformers fork can expose while keeping
-    the standard generation path untouched.
+    This is attached to one model instance instead of modifying
+    ``transformers.GenerationMixin`` globally. The convenience dispatch is
+    experimental; ``model.ptd_generate()`` is the clearer direct entry point.
     """
     original_generate = getattr(model, "generate", None)
     if not callable(original_generate):
@@ -238,12 +313,15 @@ def _install_generate_dispatch(model):
     model._ptd_generate_dispatch_installed = True
 
 
-def enable_ptd(model):
+def enable_ptd(model, *, tokenizer=None):
     """Attach PTD methods to one model instance and return that model.
 
-    Unlike the legacy ``augment_generate`` path, this function does not mutate
-    ``GenerationMixin`` or any Transformers model class globally.
+    The optional tokenizer is attached to this model instance because the
+    legacy PTD decoding loop uses tokenizer metadata for padding and decoding.
+    No Transformers model class is modified globally.
     """
+    if tokenizer is not None:
+        model.tokenizer = tokenizer
     model.ptd_generate = MethodType(PTDGenerationMixin.ptd_generate, model)
     model._ptd_search = MethodType(PTDGenerationMixin._ptd_search, model)
     _install_generate_dispatch(model)
